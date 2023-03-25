@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.4;
 
-contract Ownable {
+abstract contract Ownable {
     error Ownable_NotOwner();
     error Ownable_NewOwnerZeroAddress();
 
