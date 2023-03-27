@@ -55,7 +55,7 @@ contract ERC20StakingPool is Ownable, Clone, Multicall, SelfPermit {
     /// @notice The total tokens staked in the pool
     uint256 public totalSupply;
     /// @notice The Unix timestamp (in seconds) at which the current reward period ends
-    uint256 public periodFinish;
+    uint64 public periodFinish;
     /// @notice The per-second rate at which rewardPerToken increases
     uint256 public rewardRate;
     /// @notice The last stored rewardPerToken value
@@ -198,15 +198,182 @@ contract ERC20StakingPool is Ownable, Clone, Multicall, SelfPermit {
         stakeToken().transfer(msg.sender, amount);
         
         emit Withdrawn(msg.sender, amount);
+    }
+
+    /// @notice Withdraw all staked tokens and earned rewards
+    function exit() external {
+        /// -----------------------------------------------------------------------
+        /// Storage loads
+        /// -----------------------------------------------------------------------
+
+        uint256 accountBalance = balanceOf[msg.sender];
+        uint64 lastTimeRewardApplicable_ = lastTimeRewardApplicable();
+        uint256 totalSupply_ = totalSupply;
+        uint256 rewardPerToken_ = _rewardPerToken(totalSupply_, lastTimeRewardApplicable_, rewardRate);
+    
+        /// -----------------------------------------------------------------------
+        /// State updates
+        /// -----------------------------------------------------------------------
+
+        uint256 reward = _earned(msg.sender, accountBalance, rewardPerToken_, rewards[msg.sender]);
+        if (reward > 0) {
+            rewards[msg.sender] = 0;
+        }
+
+        // accrue rewards
+        rewardPerTokenStored = rewardPerToken_;
+        lastUpdateTime = lastTimeRewardApplicable_;
+        userRewardPerTokenPaid[msg.sender] = rewardPerToken_;
+
+        // withdraw stake
+        balanceOf[msg.sender] = 0;
+        // total supply has 1:1 relationship with staked amounts
+        // so can't ever underflow
+        unchecked {
+            totalSupply = totalSupply_ - accountBalance;
+        }
+
+        /// -----------------------------------------------------------------------
+        /// Effects
+        /// -----------------------------------------------------------------------
+
+        // transfer stake
+        stakeToken().safeTransfer(msg.sender, accountBalance);
+        emit Withdrawn(msg.sender, accountBalance);
+
+        // transfer rewards
+        if (reward > 0) {
+            rewardToken().safeTransfer(msg.sender, reward);
+            emit RewardPaid(msg.sender, reward);
+        }
+    }
+
+    function getReward() external {
+        /// -----------------------------------------------------------------------
+        /// Storage loads
+        /// -----------------------------------------------------------------------
         
+        uint256 accountBalance = balanceOf[msg.sender];
+        uint64 lastTimeRewardApplicable_ = lastTimeRewardApplicable();
+        uint256 totalSupply_ = totalSupply;
+        uint256 rewardPerToken_ = _rewardPerToken(totalSupply_, lastTimeRewardApplicable_, rewardRate);
+
+        /// -----------------------------------------------------------------------
+        /// State updates
+        /// -----------------------------------------------------------------------
+
+        uint256 reward = _earned(msg.sender, accountBalance, rewardPerToken_, rewards[msg.sender]);
+
+        // accrue rewards
+        rewardPerTokenStored = rewardPerToken_;
+        lastUpdateTime = lastTimeRewardApplicable_;
+        userRewardPerTokenPaid[msg.sender] = rewardPerToken_;
+
+        if (reward > 0) {
+            rewards[msg.sender] = 0;
+
+            /// -----------------------------------------------------------------------
+            /// Effects
+            /// -----------------------------------------------------------------------
+
+            rewardToken().safeTransfer(msg.sender, reward);
+            emit RewardPaid(msg.sender, reward);
+        }
     }
 
     /// -----------------------------------------------------------------------
     /// Getters
     /// -----------------------------------------------------------------------
 
+    /// @notice The latest time at which stakers are earning rewards.
     function lastTimeRewardApplicable() public view returns (uint64) {
         return uint64(block.timestamp < periodFinish ? uint64(block.timestamp) : periodFinish);
+    }
+
+    /// @notice The amount of reward tokens each staked token earned so far.
+    function rewardPerToken() external view returns (uint256) {
+        return _rewardPerToken(totalSupply, lastTimeRewardApplicable(), rewardRate);
+    }
+
+    /// @notice The amount of reward tokens an account has accrued so far. Does not
+    /// include already withdrawn rewards.
+    function earned(address account) external view returns (uint256) {
+        return _earned(
+            account,
+            balanceOf[account],
+            _rewardPerToken(totalSupply, lastTimeRewardApplicable(), rewardRate),
+            rewards[account]
+        );
+    }
+
+    /// -----------------------------------------------------------------------
+    /// Owner actions
+    /// -----------------------------------------------------------------------
+
+    /// @notice Lets a reward distributor start a new reward period. The reward tokens must have already
+    /// been transferred to this contract before calling this function. If it is called
+    /// when a reward period is still active, a new reward period will begin from the time
+    /// of calling this function, using the leftover rewards from the old reward period plus
+    /// the newly sent rewards as the reward.
+    /// @dev If the reward amount will cause an overflow when computing rewardPerToken, then
+    /// this function will revert.
+    /// @param reward The amount of reward tokens to use in the new reward period.
+    function nofifyRewardAmount(uint256 reward) external {
+        /// -----------------------------------------------------------------------
+        /// Validation
+        /// -----------------------------------------------------------------------
+
+        if (reward == 0) {
+            return;
+        }
+        if (!isRewardDistributor[msg.sender]) {
+            revert Error_NotRewardDistributor();
+        }
+
+        /// -----------------------------------------------------------------------
+        /// Storage loads
+        /// -----------------------------------------------------------------------
+
+        uint256 rewardRate_ = rewardRate;
+        uint64 periodFinish_ = periodFinish;
+        uint64 lastTimeRewardApplicable_ = block.timestamp < periodFinish_ ? uint64(block.timestamp) : periodFinish_;
+        uint64 DURATION_ = DURATION();
+        uint256 totalSupply_ = totalSupply;
+
+        /// -----------------------------------------------------------------------
+        /// State updates
+        /// -----------------------------------------------------------------------
+
+        // accure rewards
+        rewardPerTokenStored = _rewardPerToken(totalSupply_, lastTimeRewardApplicable_, rewardRate_);
+        lastUpdateTime = lastTimeRewardApplicable_;
+
+        // record new rewardRate
+        uint256 newRewardRate;
+        if (block.timestamp > periodFinish_) {
+            newRewardRate = reward / DURATION_;
+        } else {
+            uint256 remaining = periodFinish_ - block.timestamp;
+            uint256 leftover = remaining * rewardRate_;
+            newRewardRate = (reward + leftover) / DURATION_;
+        }
+        // prevent overflow when computing rewardPerToken
+        if (newRewardRate >= ((type(uint256).max / PRECISION) / DURATION_)) {
+            revert Error_AmountTooLarge();
+        }
+        rewardRate = newRewardRate;
+        lastUpdateTime = uint64(block.timestamp);
+        periodFinish = uint64(block.timestamp + DURATION_);
+
+        emit RewardAdded(reward);
+    }
+
+    /// @notice Lets the owner add/remove accounts from the list of reward distributors.
+    /// Reward distributors can call notifyRewardAmount()
+    /// @param rewardDistributor The account to add/remove
+    /// @param isRewardDistributor_ True to add the account, false to remove the account
+    function setRewardDistributor(address rewardDistributor, bool isRewardDistributor_) external onlyOwner {
+        isRewardDistributor[rewardDistributor] = isRewardDistributor_;
     }
 
     /// -----------------------------------------------------------------------
