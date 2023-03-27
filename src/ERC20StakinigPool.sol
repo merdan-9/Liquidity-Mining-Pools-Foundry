@@ -153,6 +153,54 @@ contract ERC20StakingPool is Ownable, Clone, Multicall, SelfPermit {
         emit Staked(msg.sender, amount);
     }
 
+    /// @notice Withdraws staked tokens from the pool
+    /// @param amount The amount of token to withdraw
+    function withfraw(uint256 amount) external {
+        /// -----------------------------------------------------------------------
+        /// Validation
+        /// -----------------------------------------------------------------------
+        
+        if (amount == 0) {
+            return;
+        }
+
+        /// -----------------------------------------------------------------------
+        /// Storage loads
+        /// -----------------------------------------------------------------------
+        
+        uint256 accountBalance = balanceOf[msg.sender];
+        uint64 lastTimeRewardApplicable_ = lastTimeRewardApplicable();
+        uint256 totalSupply_ = totalSupply;
+        uint256 rewardPerToken_ = _rewardPerToken(totalSupply_, lastTimeRewardApplicable_, rewardRate);
+
+        /// -----------------------------------------------------------------------
+        /// State updates
+        /// -----------------------------------------------------------------------
+
+        // accrue rewards
+        rewardPerTokenStored = rewardPerToken_;
+        lastUpdateTime = lastTimeRewardApplicable_;
+        rewards[msg.sender] = _earned(msg.sender, accountBalance, rewardPerToken_, rewards[msg.sender]);
+        userRewardPerTokenPaid[msg.sender] = rewardPerToken_;
+
+        // withdraw stake
+        // total supply has 1:1 relationship with staked amounts
+        // so can't ever underflow
+        unchecked {
+            totalSupply = totalSupply_ - amount;
+        }
+        balanceOf[msg.sender] = accountBalance - amount;
+
+        /// -----------------------------------------------------------------------
+        /// Effects
+        /// -----------------------------------------------------------------------
+
+        stakeToken().transfer(msg.sender, amount);
+        
+        emit Withdrawn(msg.sender, amount);
+        
+    }
+
     /// -----------------------------------------------------------------------
     /// Getters
     /// -----------------------------------------------------------------------
