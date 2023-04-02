@@ -62,13 +62,13 @@ contract ERC20StakingPool is Ownable, Clone, Multicall, SelfPermit {
     uint256 public rewardPerTokenStored;
 
     /// @notice Tracks if an address can call notifyReward()
-    mapping(address => bool) isRewardDistributor;
+    mapping(address => bool) public isRewardDistributor;
     /// @notice The amount of tokens staked by an account
-    mapping(address => uint256) balanceOf;
+    mapping(address => uint256) public balanceOf;
     /// @notice The rewardPerToken value when an account last staked/withdrew/withdrew rewards
-    mapping(address => uint256) userRewardPerTokenPaid;
+    mapping(address => uint256) public userRewardPerTokenPaid;
     /// @notice The earned() value when an account last staked/withdrew/withdrew rewards
-    mapping(address => uint256) rewards;
+    mapping(address => uint256) public rewards;
 
     /// -----------------------------------------------------------------------
     /// Immutable parameters
@@ -155,7 +155,7 @@ contract ERC20StakingPool is Ownable, Clone, Multicall, SelfPermit {
 
     /// @notice Withdraws staked tokens from the pool
     /// @param amount The amount of token to withdraw
-    function withfraw(uint256 amount) external {
+    function withdraw(uint256 amount) external {
         /// -----------------------------------------------------------------------
         /// Validation
         /// -----------------------------------------------------------------------
